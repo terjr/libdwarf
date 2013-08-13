@@ -328,6 +328,13 @@ _dwarf_setup(Dwarf_Debug dbg, Dwarf_Error * error)
         /*19*/
         DW_DLE_DEBUG_STRTAB_ERR,0,
         FALSE);
+    /* Newtype macros. */
+    add_debug_section_info(dbg,".debug_macro",&dbg->de_debug_macro,
+        /*20*/
+        DW_DLE_DEBUG_MACRO_DUPLICATE,0,
+        FALSE);
+
+
 
     /*  We can skip index 0 when considering ELF files, but not other
         object types.  Indeed regardless of the object type we should

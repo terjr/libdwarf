@@ -477,3 +477,456 @@ dwarf_get_macro_details(Dwarf_Debug dbg,
     free_macro_stack(dbg,&msdata);
     return DW_DLV_OK;
 }
+
+int
+dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
+    Dwarf_Off macro_offset, // macro offset in the compilation unit
+    Dwarf_Unsigned maximum_count,
+    Dwarf_Signed *entry_count,
+    Dwarf_Macro_Details **details,
+    Dwarf_Error *error)
+{
+
+    Dwarf_Small *macro_base = 0;
+    Dwarf_Small *macro_entries_base = 0;
+    Dwarf_Half version = 0;
+    Dwarf_Small flags = 0;
+    Dwarf_Small *pnext = 0;
+    Dwarf_Unsigned endloc = 0;
+    unsigned char uc = 0;
+    unsigned long depth = 0;
+        /* By section 6.3.2 Dwarf3 draft 8/9,
+        the base file should appear as
+        DW_MACINFO_start_file. See
+        http://gcc.gnu.org/ml/gcc-bugs/2005-02/msg03442.html
+        on "[Bug debug/20253] New: [3.4/4.0 regression]:
+        Macro debug info broken due to lexer change" for how
+        gcc is broken in some versions. We no longer use
+        depth as a stopping point, it's not needed as a
+        stopping point anyway.  */
+    int res = 0;
+    /* count space used by strings */
+    unsigned long str_space = 0;
+    int done = 0;
+    unsigned long space_needed = 0;
+    unsigned long string_offset = 0;
+    Dwarf_Small *return_data = 0;
+    Dwarf_Small *pdata = 0;
+    unsigned long final_count = 0;
+    Dwarf_Signed fileindex = -1;
+    Dwarf_Small *latest_str_loc = 0;
+    struct macro_stack_s msdata;
+
+    unsigned long count = 0;
+    unsigned long max_count = (unsigned long) maximum_count;
+
+    _dwarf_reset_index_macro_stack(&msdata);
+    if (dbg == NULL) {
+        _dwarf_error(NULL, error, DW_DLE_DBG_NULL);
+        free_macro_stack(dbg,&msdata);
+        return (DW_DLV_ERROR);
+    }
+
+    res = _dwarf_load_section(dbg, &dbg->de_debug_macro,error);
+    if (res != DW_DLV_OK) {
+        free_macro_stack(dbg,&msdata);
+        return res;
+    }
+    if (!dbg->de_debug_abbrev.dss_size) {
+        free_macro_stack(dbg,&msdata);
+        return (DW_DLV_NO_ENTRY);
+    }
+
+    macro_base = dbg->de_debug_macro.dss_data;
+    if (macro_base == NULL) {
+        free_macro_stack(dbg,&msdata);
+        return (DW_DLV_NO_ENTRY);
+    }
+    if (macro_offset >= dbg->de_debug_macro.dss_size) {
+        free_macro_stack(dbg,&msdata);
+        return (DW_DLV_NO_ENTRY);
+    }
+
+    pnext = macro_base + macro_offset;
+    if (maximum_count == 0) {
+        max_count = ULONG_MAX;
+    }
+
+    /* read section header */
+
+    version = *pnext;
+    pnext += 2; // skip over the version number
+
+    /* Version has to be 4 for these to be considered. Change this
+     * when/if it gets accepted to the DWARF standard. */
+
+    if (version != 4) {
+        free_macro_stack(dbg,&msdata);
+        return (DW_DLV_NO_ENTRY);
+    }
+
+    flags = *pnext;
+    pnext++; // skip over the flags byte
+
+    Dwarf_Small offset_size = 4;
+    if (flags & 1) {
+        offset_size = 8;
+    }
+
+    Dwarf_Off line_offset = 0;
+    if (flags & 2) {
+        if (offset_size == 4) {
+            line_offset = *pnext & 0xf;
+        } else { // offset_size == 8
+            line_offset = *pnext & 0xff;
+        }
+        /* skip over the line offset */
+        pnext += offset_size;
+    }
+
+    if (flags & 4) {
+        /* Table describing arguments follows. Need to skip over it. */
+        Dwarf_Small opcode_count = *pnext;
+        ++pnext;
+
+        int i;
+        for (i = 0; i < opcode_count; ++i) {
+            Dwarf_Small opcode = *pnext;
+            ++pnext;
+            Dwarf_Word len;
+            Dwarf_Unsigned argument_count = _dwarf_decode_u_leb128(pnext, &len);
+            pnext += len;
+
+            int j;
+            for (j = 0; j < argument_count; ++j) {
+                Dwarf_Small form = *pnext;
+                ++pnext;
+                switch (form) {
+                    case DW_FORM_data1:
+                    case DW_FORM_data2:
+                    case DW_FORM_data4:
+                    case DW_FORM_data8:
+                    case DW_FORM_sdata:
+                    case DW_FORM_udata:
+                    case DW_FORM_block:
+                    case DW_FORM_block1:
+                    case DW_FORM_block2:
+                    case DW_FORM_block4:
+                    case DW_FORM_flag:
+                    case DW_FORM_string:
+                    case DW_FORM_strp:
+                    case DW_FORM_sec_offset:
+                        /* Do nothing, just skip. */
+                        break;
+                    default:
+                        // TODO: Correct error code?
+                        _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                        free_macro_stack(dbg,&msdata);
+                        return (DW_DLV_ERROR);
+                }
+            }
+        }
+    }
+    /* Have now parsed the section header. */
+    macro_entries_base = pnext;
+
+
+    /* how many entries and how much space will they take? */
+
+    endloc = (pnext - macro_base);
+    if (endloc >= dbg->de_debug_macro.dss_size) {
+        if (endloc == dbg->de_debug_macro.dss_size) {
+            /* normal: found last entry */
+            free_macro_stack(dbg,&msdata);
+            return DW_DLV_NO_ENTRY;
+        }
+        _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_LENGTH_BAD);
+        free_macro_stack(dbg,&msdata);
+        return (DW_DLV_ERROR);
+    }
+    for (count = 0; !done && count < max_count; ++count) {
+        unsigned long slen;
+        Dwarf_Word len;
+
+        uc = *pnext;
+        ++pnext;                /* get past the type code */
+        switch (uc) {
+        case DW_MACRO_define:
+        case DW_MACRO_undef:
+            /* line, string */
+        case DW_MACINFO_vendor_ext: // TODO: should no longer be here.
+            /* number, string */
+            (void) _dwarf_decode_u_leb128(pnext, &len);
+
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            slen = strlen((char *) pnext) + 1;
+            pnext += slen;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            str_space += slen;
+            break;
+        case DW_MACRO_start_file:
+            /* line, file index */
+            (void) _dwarf_decode_u_leb128(pnext, &len);
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            (void) _dwarf_decode_u_leb128(pnext, &len);
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            ++depth;
+            break;
+
+        case DW_MACRO_end_file:
+            if (--depth == 0) {
+                /*  done = 1; no, do not stop here, at least one gcc had
+                    the wrong depth settings in the gcc 3.4 timeframe. */
+            }
+            /* no string or number here */
+            break;
+        /* Newtype macro definitions. Entries in .debug_macro is just
+         * an offset into .debug_str. */
+        //TODO: How much space will these take?
+        case DW_MACRO_define_indirect:
+        case DW_MACRO_undef_indirect:
+            /* line, offset */
+            (void) _dwarf_decode_u_leb128(pnext, &len);
+
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            Dwarf_Small offset = *pnext;
+            pnext += offset_size;
+            char *string;
+
+            // TODO: Check for DW_DLV_OK
+            dwarf_get_str(dbg, offset, &string, (Dwarf_Signed *) &slen, error);
+            //slen = strlen((char *) pnext) + 1;
+            //pnext += slen;
+            ++slen; // Count the trailing \0.
+            pnext += slen;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            str_space += slen;
+            break;
+        case 0:
+            /* end of cu's entries */
+            done = 1;
+            break;
+        default:
+            free_macro_stack(dbg,&msdata);
+            _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_INCONSISTENT);
+            return (DW_DLV_ERROR);
+            /* bogus macinfo! */
+        }
+
+        endloc = (pnext - macro_base);
+        if (endloc == dbg->de_debug_macro.dss_size) {
+            done = 1;
+        } else if (endloc > dbg->de_debug_macro.dss_size) {
+            _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_LENGTH_BAD);
+            free_macro_stack(dbg,&msdata);
+            return (DW_DLV_ERROR);
+        }
+    }
+    if (count == 0) {
+        free_macro_stack(dbg,&msdata);
+        _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_INTERNAL_ERR);
+        return (DW_DLV_ERROR);
+    }
+
+    /*  We have 'count' array entries to allocate and str_space bytes of
+        string space to provide for. */
+
+    string_offset = count * sizeof(Dwarf_Macro_Details);
+
+    /* extra 2 not really needed */
+    space_needed = string_offset + str_space + 2;
+    return_data = pdata =
+        _dwarf_get_alloc(dbg, DW_DLA_STRING, space_needed);
+    latest_str_loc = pdata + string_offset;
+    if (pdata == 0) {
+        free_macro_stack(dbg,&msdata);
+        _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_MALLOC_SPACE);
+        return (DW_DLV_ERROR);
+    }
+    pnext = macro_entries_base + macro_offset;
+
+    done = 0;
+
+    /* A series ends with a type code of 0. */
+
+    for (final_count = 0; !done && final_count < count; ++final_count) {
+        unsigned long slen;
+        Dwarf_Word len;
+        Dwarf_Unsigned v1;
+        Dwarf_Macro_Details *pdmd = (Dwarf_Macro_Details *) (pdata +
+            (final_count * sizeof (Dwarf_Macro_Details)));
+
+        endloc = (pnext - macro_base);
+        if (endloc > dbg->de_debug_macro.dss_size) {
+            free_macro_stack(dbg,&msdata);
+            _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_LENGTH_BAD);
+            return (DW_DLV_ERROR);
+        }
+        uc = *pnext;
+        pdmd->dmd_offset = (pnext - macro_base);
+        pdmd->dmd_type = uc;
+        pdmd->dmd_fileindex = fileindex;
+        pdmd->dmd_lineno = 0;
+        pdmd->dmd_macro = 0;
+        ++pnext;                /* get past the type code */
+        switch (uc) {
+        case DW_MACRO_define:
+        case DW_MACRO_undef:
+            /* line, string */
+        case DW_MACINFO_vendor_ext: // TODO: LO_USER and HI_USER?
+            /* number, string */
+            v1 = _dwarf_decode_u_leb128(pnext, &len);
+            pdmd->dmd_lineno = v1;
+
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            slen = strlen((char *) pnext) + 1;
+            strcpy((char *) latest_str_loc, (char *) pnext);
+            pdmd->dmd_macro = (char *) latest_str_loc;
+            latest_str_loc += slen;
+            pnext += slen;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            break;
+        case DW_MACRO_define_indirect:
+        case DW_MACRO_undef_indirect:
+            /* line, offset */
+            v1 = _dwarf_decode_u_leb128(pnext, &len);
+            pdmd->dmd_lineno = v1;
+
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+
+            Dwarf_Small offset = *pnext;
+            char *string;
+
+            // TODO: Check for DW_DLV_OK
+            dwarf_get_str(dbg, offset, &string, (Dwarf_Signed *) &slen, error);
+            //slen = strlen((char *) pnext) + 1;
+            strcpy((char *) latest_str_loc, string);
+
+            pdmd->dmd_macro = (char *) latest_str_loc;
+            latest_str_loc += slen;
+            pnext += slen;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+
+            break;
+        case DW_MACRO_start_file:
+            /* Line, file index */
+            v1 = _dwarf_decode_u_leb128(pnext, &len);
+            pdmd->dmd_lineno = v1;
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            v1 = _dwarf_decode_u_leb128(pnext, &len);
+            pdmd->dmd_fileindex = v1;
+            (void) _dwarf_macro_stack_push_index(dbg, fileindex,
+                &msdata);
+            /*  We ignore the error, we just let fileindex ** be -1 when
+                we pop this one. */
+            fileindex = v1;
+            pnext += len;
+            if (((Dwarf_Unsigned)(pnext - macro_base)) >=
+                dbg->de_debug_macro.dss_size) {
+                free_macro_stack(dbg,&msdata);
+                dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+                _dwarf_error(dbg, error,
+                    DW_DLE_DEBUG_MACRO_INCONSISTENT);
+                return (DW_DLV_ERROR);
+            }
+            break;
+
+        case DW_MACRO_end_file:
+            fileindex = _dwarf_macro_stack_pop_index(&msdata);
+            break;              /* no string or number here */
+        case 0:
+            /* Type code of 0 means the end of cu's entries. */
+            done = 1;
+            break;
+        default:
+            /* Bogus macinfo! */
+            dwarf_dealloc(dbg, return_data, DW_DLA_STRING);
+            free_macro_stack(dbg,&msdata);
+            _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_INCONSISTENT);
+            return (DW_DLV_ERROR);
+        }
+    }
+    *entry_count = count;
+    *details = (Dwarf_Macro_Details *) return_data;
+    free_macro_stack(dbg,&msdata);
+    return DW_DLV_OK;
+}
+

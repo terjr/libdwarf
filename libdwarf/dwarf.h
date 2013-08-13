@@ -914,6 +914,18 @@ extern "C" {
 #define DW_MACINFO_end_file             0x04
 #define DW_MACINFO_vendor_ext           0xff
 
+/* Newtype macro information (draft 110722.1). */
+#define DW_MACRO_define                 0x01
+#define DW_MACRO_undef                  0x02
+#define DW_MACRO_start_file             0x03
+#define DW_MACRO_end_file               0x04
+#define DW_MACRO_define_indirect        0x05
+#define DW_MACRO_undef_indirect         0x06
+#define DW_MACRO_transparent_include    0x07
+#define DW_MACRO_lo_user                0xe0
+#define DW_MACRO_hi_user                0xff
+
+
 /* CFA operator compaction (a space saving measure, see
    the DWARF standard) means DW_CFA_extended and DW_CFA_nop 
    have the same value here.  */

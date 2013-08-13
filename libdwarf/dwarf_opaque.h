@@ -324,6 +324,7 @@ struct Dwarf_Debug_s {
     struct Dwarf_Section_s de_debug_pubnames;
     struct Dwarf_Section_s de_debug_str;
     struct Dwarf_Section_s de_debug_frame;
+    struct Dwarf_Section_s de_debug_macro; /* newtype macro information */
 
     /* gnu: the g++ eh_frame section */
     struct Dwarf_Section_s de_debug_frame_eh_gnu;
