@@ -619,7 +619,7 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
                         /* Do nothing, just skip. */
                         break;
                     default:
-                        // TODO: Correct error code?
+                        // TODO: Correct error code? Create distinct error code.
                         _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_INCONSISTENT);
                         free_macro_stack(dbg,&msdata);
                         return (DW_DLV_ERROR);
@@ -650,7 +650,6 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
 
         uc = *pnext;
         ++pnext;                /* get past the type code */
-        printf("Checking size of: %02x\n", uc);
         switch (uc) {
         case DW_MACRO_define:
         case DW_MACRO_undef:
@@ -736,9 +735,7 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
             // TODO: Check for DW_DLV_OK
             dwarf_get_str(dbg, offset, &string, (Dwarf_Signed *) &slen, error);
             //slen = strlen((char *) pnext) + 1;
-            //pnext += slen;
             ++slen; // +1 for the trailing \0;
-            //pnext += slen; //
             if (((Dwarf_Unsigned)(pnext - macro_base)) >=
                 dbg->de_debug_macro.dss_size) {
                 free_macro_stack(dbg,&msdata);
@@ -749,9 +746,8 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
             str_space += slen;
             break;
         case DW_MACRO_transparent_include:
-            /* TODO: Just a temporary hack to get output correct without
-             * the need to implement transparent_include */
-            --count;
+            // Just skip over as it would be processed as a separate CU.
+            // TODO: Is this correct?
             pnext +=  offset_size;
             break;
         // TODO: What about DW_MACRO_lo_user and DW_MACRO_hi_user?
@@ -796,7 +792,7 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
         _dwarf_error(dbg, error, DW_DLE_DEBUG_MACRO_MALLOC_SPACE);
         return (DW_DLV_ERROR);
     }
-    pnext = macro_entries_base + macro_offset;
+    pnext = macro_entries_base;
 
     done = 0;
 
@@ -822,7 +818,6 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
         pdmd->dmd_lineno = 0;
         pdmd->dmd_macro = 0;
         ++pnext;                /* get past the type code */
-        printf("Processing: %02x\n", uc);
         switch (uc) {
         case DW_MACRO_define:
         case DW_MACRO_undef:
@@ -883,7 +878,6 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
             // TODO: Check for DW_DLV_OK
             dwarf_get_str(dbg, offset, &string, (Dwarf_Signed *) &slen, error);
             ++slen; // +1 for the trailing \0
-            printf("Got back: %s\n", string);
             //slen = strlen((char *) pnext) + 1;
             strcpy((char *) latest_str_loc, string);
 
