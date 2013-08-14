@@ -2145,6 +2145,12 @@ int dwarf_get_macro_details(Dwarf_Debug /*dbg*/,
     Dwarf_Macro_Details ** /*details*/,
     Dwarf_Error *        /*err*/);
 
+int dwarf_get_macro_details_newtype(Dwarf_Debug /*dbg*/,
+    Dwarf_Off            /*macro_offset*/,
+    Dwarf_Unsigned       /*maximum_count*/,
+    Dwarf_Signed         * /*entry_count*/,
+    Dwarf_Macro_Details ** /*details*/,
+    Dwarf_Error *        /*err*/);
 
 int dwarf_get_address_size(Dwarf_Debug /*dbg*/,
     Dwarf_Half  *    /*addr_size*/,
