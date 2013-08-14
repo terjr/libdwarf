@@ -749,6 +749,9 @@ dwarf_get_macro_details_newtype(Dwarf_Debug dbg,
             str_space += slen;
             break;
         case DW_MACRO_transparent_include:
+            /* TODO: Just a temporary hack to get output correct without
+             * the need to implement transparent_include */
+            --count;
             pnext +=  offset_size;
             break;
         // TODO: What about DW_MACRO_lo_user and DW_MACRO_hi_user?
