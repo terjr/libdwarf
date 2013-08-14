@@ -153,7 +153,8 @@ print_macinfo(Dwarf_Debug dbg)
     cout << endl;
     cout << ".debug_macinfo" << endl;
 
-    while ((lres = dwarf_get_macro_details(dbg, offset,
+    while ((lres = dwarf_get_macro_details_newtype(dbg, offset,
+    //while ((lres = dwarf_get_macro_details(dbg, offset,
         max, &count, &maclist,
         &err)) == DW_DLV_OK) {
         long i;
